@@ -32,7 +32,7 @@ defmodule Samly.Mixfile do
       {:esaml, "~> 4.3"},
       {:sweet_xml, "~> 0.6"},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
-      {:ex_doc, "~> 0.19", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.22", only: :dev, runtime: false}
     ]
   end
 
@@ -47,7 +47,7 @@ defmodule Samly.Mixfile do
 
   defp package() do
     [
-      maintainers: ["dropbox", "KMC"],
+      maintainers: ["dropbox", "KMC", "jamesvl"],
       files: ["config", "lib", "LICENSE", "mix.exs", "README.md"],
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url}
