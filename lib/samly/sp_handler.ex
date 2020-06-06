@@ -32,10 +32,12 @@ defmodule Samly.SPHandler do
     saml_response = conn.body_params["SAMLResponse"]
     relay_state = conn.body_params["RelayState"] |> URI.decode_www_form()
 
-    with {:ok, assertion} <- Helper.decode_idp_auth_resp(sp, saml_encoding, saml_response),
-         :ok <- validate_authresp(conn, assertion, relay_state),
-         conn = conn |> put_private(:samly_assertion, assertion),
-         {:halted, %Conn{halted: false} = conn} <- {:halted, pipethrough(conn, pipeline)} do
+    with(
+      {:ok, assertion} <- Helper.decode_idp_auth_resp(sp, saml_encoding, saml_response),
+      :ok <- validate_authresp(conn, assertion, relay_state),
+      conn = conn |> put_private(:samly_assertion, assertion),
+      {:halted, %Conn{halted: false} = conn} <- {:halted, pipethrough(conn, pipeline)}
+    ) do
       updated_assertion = conn.private[:samly_assertion]
       computed = updated_assertion.computed
       assertion = %Assertion{assertion | computed: computed, idp_id: idp_id}

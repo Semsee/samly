@@ -68,8 +68,10 @@ defmodule Samly.Helper do
   end
 
   def decode_idp_auth_resp(sp, saml_encoding, saml_response) do
-    with {:ok, xml_frag} <- decode_saml_payload(saml_encoding, saml_response),
-         {:ok, assertion_rec} <- :esaml_sp.validate_assertion(xml_frag, sp) do
+    with(
+      {:ok, xml_frag} <- decode_saml_payload(saml_encoding, saml_response),
+      {:ok, assertion_rec} <- :esaml_sp.validate_assertion(xml_frag, sp)
+    ) do
       {:ok, Assertion.from_rec(assertion_rec)}
     else
       {:error, reason} -> {:error, reason}
@@ -84,9 +86,11 @@ defmodule Samly.Helper do
       {'ds', 'http://www.w3.org/2000/09/xmldsig#'}
     ]
 
-    with {:ok, xml_frag} <- decode_saml_payload(saml_encoding, saml_response),
-         nodes when is_list(nodes) and length(nodes) == 1 <-
-           :xmerl_xpath.string('/samlp:LogoutResponse', xml_frag, [{:namespace, resp_ns}]) do
+    with(
+      {:ok, xml_frag} <- decode_saml_payload(saml_encoding, saml_response),
+      nodes when is_list(nodes) and length(nodes) == 1 <-
+        :xmerl_xpath.string('/samlp:LogoutResponse', xml_frag, [{:namespace, resp_ns}])
+    ) do
       :esaml_sp.validate_logout_response(xml_frag, sp)
     else
       _ -> {:error, :invalid_request}
@@ -111,6 +115,7 @@ defmodule Samly.Helper do
   defp decode_saml_payload(saml_encoding, saml_payload) do
     try do
       xml = :esaml_binding.decode_response(saml_encoding, saml_payload)
+            |> IO.inspect(label: "esaml decoded response")
       {:ok, xml}
     rescue
       error -> {:error, {:invalid_response, "#{inspect(error)}"}}
