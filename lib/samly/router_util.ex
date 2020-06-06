@@ -104,4 +104,31 @@ defmodule Samly.RouterUtil do
     |> Conn.send_resp(status_code, "")
     |> Conn.halt()
   end
+
+  @doc """
+  Use our own named cookie with SameSite: None for storing relay_state, etc.
+
+  With browsers defaulting to SameSite: Lax for cookies, simply storing the
+  relay_state in the Session will fail when the IdP does a POST back to our
+  original site (i.e. Service Provider). Cookies are *not* included when
+  SameSite is set to lax, and so the relay_state will never match.
+
+  Instead, we set our own cookie with SameSite set to None.
+  The cookie is encrypted and given a max age of 5 minutes (in case they need
+  to go through their own auth flow before being redirect).
+  Since SameSite is None, Secure must be set to true; JS does not need
+  this cookie (and couldn't read it anyway), so Http Only is also set to true.
+  """
+  def set_samly_cookie(conn, idp_id, data) do
+    opts = [encrypt: true, max_age: 300, http_only: true, secure: true, same_site: "None"]
+
+    Conn.put_resp_cookie(conn, cookie_name(idp_id), data, opts)
+  end
+
+  @doc """
+  Use a cookie prefix in the cookie name for additional security
+
+  See https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies#Cookie_prefixes
+  """
+  def cookie_name(idp_id), do: "_Host-#{idp_id}_samly"
 end

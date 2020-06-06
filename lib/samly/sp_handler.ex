@@ -5,14 +5,12 @@ defmodule Samly.SPHandler do
   import Plug.Conn
   alias Plug.Conn
   require Samly.Esaml
-  alias Samly.{Assertion, Esaml, Helper, IdpData, State, Subject}
-
-  import Samly.RouterUtil, only: [ensure_sp_uris_set: 2, send_saml_request: 5, redirect: 3]
+  alias Samly.{Assertion, Esaml, Helper, IdpData, RouterUtil, State, Subject}
 
   def send_metadata(conn) do
     %IdpData{} = idp = conn.private[:samly_idp]
     %IdpData{esaml_idp_rec: _idp_rec, esaml_sp_rec: sp_rec} = idp
-    sp = ensure_sp_uris_set(sp_rec, conn)
+    sp = RouterUtil.ensure_sp_uris_set(sp_rec, conn)
     metadata = Helper.sp_metadata(sp)
 
     conn
@@ -28,11 +26,11 @@ defmodule Samly.SPHandler do
   def consume_signin_response(conn) do
     %IdpData{id: idp_id} = idp = conn.private[:samly_idp]
     %IdpData{pre_session_create_pipeline: pipeline, esaml_sp_rec: sp_rec} = idp
-    sp = ensure_sp_uris_set(sp_rec, conn)
+    sp = RouterUtil.ensure_sp_uris_set(sp_rec, conn)
 
     saml_encoding = conn.body_params["SAMLEncoding"]
     saml_response = conn.body_params["SAMLResponse"]
-    relay_state = conn.body_params["RelayState"] |> safe_decode_www_form()
+    relay_state = conn.body_params["RelayState"] |> URI.decode_www_form()
 
     with(
       {:ok, assertion} <- Helper.decode_idp_auth_resp(sp, saml_encoding, saml_response),
@@ -53,7 +51,7 @@ defmodule Samly.SPHandler do
       conn
       |> configure_session(renew: true)
       |> put_session("samly_assertion_key", assertion_key)
-      |> redirect(302, target_url)
+      |> RouterUtil.redirect(302, target_url)
     else
       {:halted, conn} ->
         conn
@@ -97,18 +95,23 @@ defmodule Samly.SPHandler do
   # SP-initiated flow auth response
   defp validate_authresp(conn, _assertion, relay_state) do
     %IdpData{id: idp_id} = conn.private[:samly_idp]
-    rs_in_session = get_session(conn, "relay_state")
-    idp_id_in_session = get_session(conn, "idp_id")
-    url_in_session = get_session(conn, "target_url")
+
+    cookie_name = RouterUtil.cookie_name(idp_id)
+    conn = fetch_cookies(conn, encrypted: cookie_name)
+    samly_cookie = Map.get(conn.cookies, cookie_name, %{})
+
+    rs_in_cookie = Map.get(samly_cookie, :relay_state)
+    idp_id_in_cookie = Map.get(samly_cookie, :idp_id)
+    url_in_cookie = Map.get(samly_cookie, :target_url)
 
     cond do
-      rs_in_session == nil || rs_in_session != relay_state ->
+      rs_in_cookie == nil || rs_in_cookie != relay_state ->
         {:error, :invalid_relay_state}
 
-      idp_id_in_session == nil || idp_id_in_session != idp_id ->
+      idp_id_in_cookie == nil || idp_id_in_cookie != idp_id ->
         {:error, :invalid_idp_id}
 
-      url_in_session == nil ->
+      url_in_cookie == nil ->
         {:error, :invalid_target_url}
 
       true ->
@@ -132,21 +135,25 @@ defmodule Samly.SPHandler do
   def handle_logout_response(conn) do
     %IdpData{id: idp_id} = idp = conn.private[:samly_idp]
     %IdpData{esaml_idp_rec: _idp_rec, esaml_sp_rec: sp_rec} = idp
-    sp = ensure_sp_uris_set(sp_rec, conn)
+    sp = RouterUtil.ensure_sp_uris_set(sp_rec, conn)
 
     saml_encoding = conn.body_params["SAMLEncoding"]
     saml_response = conn.body_params["SAMLResponse"]
-    relay_state = conn.body_params["RelayState"] |> safe_decode_www_form()
+    relay_state = conn.body_params["RelayState"] |> URI.decode_www_form()
+
+    cookie_name = RouterUtil.cookie_name(idp_id)
+    conn = fetch_cookies(conn, encrypted: cookie_name)
+    samly_cookie = Map.get(conn.cookies, cookie_name, %{})
 
     with(
       {:ok, _payload} <- Helper.decode_idp_signout_resp(sp, saml_encoding, saml_response),
-      ^relay_state when relay_state != nil <- get_session(conn, "relay_state"),
-      ^idp_id <- get_session(conn, "idp_id"),
-      target_url when target_url != nil <- get_session(conn, "target_url")
+      ^relay_state when relay_state != nil <- Map.get(samly_cookie, :relay_state),
+      ^idp_id <- Map.get(samly_cookie, :idp_id),
+      target_url when target_url != nil <- Map.get(samly_cookie, :target_url)
     ) do
       conn
       |> configure_session(drop: true)
-      |> redirect(302, target_url)
+      |> RouterUtil.redirect(302, target_url)
     else
       error -> conn |> send_resp(403, "invalid_request #{inspect(error)}")
     end
@@ -161,11 +168,11 @@ defmodule Samly.SPHandler do
   def handle_logout_request(conn) do
     %IdpData{id: idp_id} = idp = conn.private[:samly_idp]
     %IdpData{esaml_idp_rec: idp_rec, esaml_sp_rec: sp_rec} = idp
-    sp = ensure_sp_uris_set(sp_rec, conn)
+    sp = RouterUtil.ensure_sp_uris_set(sp_rec, conn)
 
     saml_encoding = conn.body_params["SAMLEncoding"]
     saml_request = conn.body_params["SAMLRequest"]
-    relay_state = conn.body_params["RelayState"] |> safe_decode_www_form()
+    relay_state = conn.body_params["RelayState"] |> URI.decode_www_form()
 
     case Helper.decode_idp_signout_req(sp, saml_encoding, saml_request) do
       {:ok, payload} ->
@@ -186,7 +193,7 @@ defmodule Samly.SPHandler do
 
         conn
         |> configure_session(drop: true)
-        |> send_saml_request(
+        |> RouterUtil.send_saml_request(
           idp_signout_url,
           idp.use_redirect_for_req,
           resp_xml_frag,
@@ -198,7 +205,7 @@ defmodule Samly.SPHandler do
         {idp_signout_url, resp_xml_frag} = Helper.gen_idp_signout_resp(sp, idp_rec, :denied)
 
         conn
-        |> send_saml_request(
+        |> RouterUtil.send_saml_request(
           idp_signout_url,
           idp.use_redirect_for_req,
           resp_xml_frag,
@@ -211,7 +218,4 @@ defmodule Samly.SPHandler do
     #     Logger.error("#{inspect error}")
     #     conn |> send_resp(500, "request_failed")
   end
-
-  defp safe_decode_www_form(nil), do: ""
-  defp safe_decode_www_form(data), do: URI.decode_www_form(data)
 end
