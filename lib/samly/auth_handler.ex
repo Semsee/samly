@@ -5,7 +5,7 @@ defmodule Samly.AuthHandler do
   import Plug.Conn
   alias Samly.{Assertion, IdpData, Helper, State, Subject}
 
-  import Samly.RouterUtil, only: [ensure_sp_uris_set: 2, send_saml_request: 5, redirect: 3]
+  alias Samly.RouterUtil
 
   @sso_init_resp_template """
   <!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\"
@@ -57,14 +57,14 @@ defmodule Samly.AuthHandler do
   def send_signin_req(conn) do
     %IdpData{id: idp_id} = idp = conn.private[:samly_idp]
     %IdpData{esaml_idp_rec: idp_rec, esaml_sp_rec: sp_rec} = idp
-    sp = ensure_sp_uris_set(sp_rec, conn)
+    sp = RouterUtil.ensure_sp_uris_set(sp_rec, conn)
 
     target_url = conn.private[:samly_target_url] || "/"
     assertion_key = get_session(conn, "samly_assertion_key")
 
     case State.get_assertion(conn, assertion_key) do
       %Assertion{idp_id: ^idp_id} ->
-        conn |> redirect(302, target_url)
+        conn |> RouterUtil.redirect(302, target_url)
 
       _ ->
         relay_state = State.gen_id()
@@ -72,12 +72,12 @@ defmodule Samly.AuthHandler do
         {idp_signin_url, req_xml_frag} =
           Helper.gen_idp_signin_req(sp, idp_rec, Map.get(idp, :nameid_format))
 
+        cookie_data = %{target_url: target_url, relay_state: relay_state, idp_id: idp_id}
+
         conn
         |> configure_session(renew: true)
-        |> put_session("relay_state", relay_state)
-        |> put_session("idp_id", idp_id)
-        |> put_session("target_url", target_url)
-        |> send_saml_request(
+        |> RouterUtil.set_samly_cookie(idp_id, cookie_data)
+        |> RouterUtil.send_saml_request(
           idp_signin_url,
           idp.use_redirect_for_req,
           req_xml_frag,
@@ -94,7 +94,7 @@ defmodule Samly.AuthHandler do
   def send_signout_req(conn) do
     %IdpData{id: idp_id} = idp = conn.private[:samly_idp]
     %IdpData{esaml_idp_rec: idp_rec, esaml_sp_rec: sp_rec} = idp
-    sp = ensure_sp_uris_set(sp_rec, conn)
+    sp = RouterUtil.ensure_sp_uris_set(sp_rec, conn)
 
     target_url = conn.private[:samly_target_url] || "/"
     assertion_key = get_session(conn, "samly_assertion_key")
@@ -110,12 +110,12 @@ defmodule Samly.AuthHandler do
         conn = State.delete_assertion(conn, assertion_key)
         relay_state = State.gen_id()
 
+        cookie_data = %{target_url: target_url, relay_state: relay_state, idp_id: idp_id}
+
         conn
-        |> put_session("target_url", target_url)
-        |> put_session("relay_state", relay_state)
-        |> put_session("idp_id", idp_id)
+        |> RouterUtil.set_samly_cookie(idp_id, cookie_data)
         |> delete_session("samly_assertion_key")
-        |> send_saml_request(
+        |> RouterUtil.send_saml_request(
           idp_signout_url,
           idp.use_redirect_for_req,
           req_xml_frag,
