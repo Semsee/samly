@@ -56,6 +56,10 @@ defmodule Samly.SPHandler do
       {:halted, conn} ->
         conn
 
+      {:error, :bad_assertion} ->
+        msg = "Access Denied - esaml returned :bad_assertion - possible cert mismatch? Check ADFS logs"
+        conn |> send_resp(403, msg)
+
       {:error, reason} ->
         case idp do
           %IdpData{debug_mode: true} ->
