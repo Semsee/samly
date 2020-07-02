@@ -114,13 +114,13 @@ defmodule Samly.RouterUtil do
   SameSite is set to lax, and so the relay_state will never match.
 
   Instead, we set our own cookie with SameSite set to None.
-  The cookie is encrypted and given a max age of 5 minutes (in case they need
+  The cookie is encrypted and given a max age of 90 seconds (in case they need
   to go through their own auth flow before being redirect).
   Since SameSite is None, Secure must be set to true; JS does not need
   this cookie (and couldn't read it anyway), so Http Only is also set to true.
   """
   def set_samly_cookie(conn, idp_id, data) do
-    opts = [encrypt: true, max_age: 300, http_only: true, secure: true, same_site: "None"]
+    opts = [encrypt: true, max_age: 90, http_only: true, secure: true, same_site: "None"]
 
     Conn.put_resp_cookie(conn, cookie_name(idp_id), data, opts)
   end
