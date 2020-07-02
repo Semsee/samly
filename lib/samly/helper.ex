@@ -115,7 +115,6 @@ defmodule Samly.Helper do
   defp decode_saml_payload(saml_encoding, saml_payload) do
     try do
       xml = :esaml_binding.decode_response(saml_encoding, saml_payload)
-            |> IO.inspect(label: "esaml decoded response")
       {:ok, xml}
     rescue
       error -> {:error, {:invalid_response, "#{inspect(error)}"}}
