@@ -29,10 +29,11 @@ defmodule Samly.Mixfile do
   defp deps() do
     [
       {:plug, "~> 1.6"},
-      {:esaml, "~> 4.3"},
-      {:sweet_xml, "~> 0.6"},
+      {:esaml, github: "Semsee/esaml"},
+      {:sweet_xml, "~> 0.7"},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
-      {:ex_doc, "~> 0.22", only: :dev, runtime: false}
+      {:ex_doc, "~> 0.24", only: :dev, runtime: false},
+      {:inch_ex, "~> 2.0", only: [:dev, :test]}
     ]
   end
 
