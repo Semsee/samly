@@ -13,21 +13,42 @@ This has been used in the wild with the following Identity Providers:
 + SimpleSAMLphp
 + Google
 
-This library uses Erlang [`esaml`](https://github.com/dropbox/esaml) to provide plug enabled routes.
+## Semsee fork
+
+This is Semsee's maintained fork of [dropbox/samly](https://github.com/dropbox/samly),
+which upstream declared unmaintained. Starting with v1.5.0 the Erlang SAML core
+([`esaml`](https://github.com/dropbox/esaml) 4.6.0, BSD-2-Clause, see
+`LICENSE.esaml`) is vendored under `src/` and `include/` instead of being pulled
+in as a Hex package. That removes the `cowboy`, `cowlib` and `ranch` dependencies
+that `esaml` dragged in purely for its own Cowboy handler, and lets us patch the
+SAML core directly.
+
+Hardening applied on top of upstream esaml 4.6.0 (see `CHANGELOG.md`):
+
++ XML entity expansion is disabled on every parse of untrusted input (CVE-2026-28809)
++ RSA-SHA1 signatures and SHA-1 digests are rejected; RSA-SHA256/384/512 accepted
++ unknown signature or digest algorithms return an error instead of crashing
++ the `ds:Reference` URI must point at the signed element
++ the digest is hashed with the declared `DigestMethod`, compared in constant time
++ inflated (DEFLATE) payloads are capped at 1 MiB
++ assertions are rejected while their `NotBefore` lies in the future (3 min skew allowed)
++ a response seen before is rejected as a replay for as long as it would be valid
++ SP-initiated responses must carry the `InResponseTo` of the request this session sent
++ malformed XML yields a 403 instead of crashing the request process
+
+The vendored Erlang modules keep their original names (`esaml`, `esaml_sp`,
+`esaml_util`, `esaml_binding`, `xmerl_dsig`, `xmerl_c14n`), so they must not be
+combined with the Hex `esaml` package in the same application.
 
 ## Setup
 
 ```elixir
 # mix.exs
 
-# v1.0.0 uses esaml v4.2 which in turn relies on cowboy 2.x
-# If you need to work with cowboy 1.x, you need the following override:
-# {:esaml, "~> 3.7", override: true}
-
 defp deps() do
   [
     # ...
-    {:samly, "~> 1.0"},
+    {:samly, github: "Semsee/samly"},
   ]
 end
 ```

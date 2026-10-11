@@ -265,7 +265,8 @@ defmodule Samly.IdpData do
       space: :normalize,
       namespace_conformant: true,
       comments: false,
-      default_attrs: true
+      default_attrs: true,
+      allow_entities: false
     ]
 
     md_xml = SweetXml.parse(metadata_xml, xml_opts)
