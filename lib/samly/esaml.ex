@@ -4,7 +4,7 @@ defmodule Samly.Esaml do
   require Record
   import Record, only: [defrecord: 2, extract: 2]
 
-  @esaml_hrl "esaml/include/esaml.hrl"
+  @esaml_hrl "samly/include/esaml.hrl"
   @public_key_hrl "public_key/include/OTP-PUB-KEY.hrl"
 
   defrecord :esaml_org, extract(:esaml_org, from_lib: @esaml_hrl)

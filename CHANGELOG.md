@@ -1,5 +1,30 @@
 # CHANGELOG
 
+### v1.5.0 (Semsee fork)
++   Vendor the `esaml` 4.6.0 Erlang modules (they are no longer maintained) into `src/` and drop
+    the Hex dependency, removing `cowboy`, `cowlib` and `ranch` from the dependency tree
++   Disable XML entity expansion when parsing SAML messages, encrypted assertions
+    and remote metadata (CVE-2026-28809)
++   `xmerl_dsig:verify/2` rejects RSA-SHA1 signatures (`insecure_algorithm`) and
+    SHA-1 digests (`insecure_digest`), returns `unsupported_algorithm` /
+    `unsupported_digest` for anything other than SHA-256/384/512, checks the
+    `ds:Reference` URI against the signed element's `ID` (`bad_reference`),
+    hashes with the declared `DigestMethod`, and compares digests in constant time
++   Cap DEFLATE-inflated payloads at 1 MiB (`inflated_payload_too_large`)
++   Reject assertions whose `NotBefore` is more than 3 minutes in the future
+    (`assertion_not_yet_valid`)
++   Detect replayed responses with `esaml_util:check_dupe_ets/2` (`duplicate`)
++   Store the AuthnRequest `ID` in the session and require the SP-initiated
+    response's `InResponseTo` to match (`invalid_in_response_to`)
++   Treat xmerl parse failures (which `exit`) as `invalid_response` instead of
+    crashing the request process
++   `esaml:config/2` reads from `config :samly, esaml: [...]` now that there is
+    no `esaml` application
++   Replace deprecated `catch Expr` with `try`/`catch` (OTP 29 warnings)
++   `esaml_sp:validate_assertion/3` reports signature failures as
+    `{error, {envelope | assertion, Reason}}` instead of nesting a second
+    `{error, Reason}` tuple inside
+
 ### v1.4.0
 +   remove uri double encoding thanks to @DiaanEngelbrecht
 +   fix esaml initialization thanks to @bopm
