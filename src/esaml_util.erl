@@ -132,9 +132,19 @@ start_ets() ->
     end.
 
 %% @private
+%% Looks a key up in one of the cache tables, creating the tables first when
+%% their owner is not running: there is no esaml application to do that any more,
+%% and the loaders may be called before Samly.Provider has started.
+cache_lookup(Table, Key) ->
+    {ok, _} = start_ets(),
+    ets:lookup(Table, Key).
+
+%% @private
+%% The owner is deliberately not linked to whoever created it, so the caches
+%% survive a restart of the process that first touched them.
 create_tables() ->
     Caller = self(),
-    Pid = spawn_link(fun() ->
+    Pid = spawn(fun() ->
               register(esaml_ets_table_owner, self()),
               ets:new(esaml_assertion_seen, [set, public, named_table]),
               ets:new(esaml_privkey_cache, [set, public, named_table]),
@@ -165,7 +175,7 @@ ets_table_owner() ->
 %% @doc Loads a private key from a file on disk (or ETS memory cache)
 -spec load_private_key(Path :: string()) -> #'RSAPrivateKey'{}.
 load_private_key(Path) ->
-    case ets:lookup(esaml_privkey_cache, Path) of
+    case cache_lookup(esaml_privkey_cache, Path) of
         [{_, Key}] ->
             Key;
         _ ->
@@ -175,7 +185,7 @@ load_private_key(Path) ->
 
 -spec import_private_key(EncodedKey :: string(), Identifier :: term()) -> #'RSAPrivateKey'{}.
 import_private_key(EncodedKey, Identifier) ->
-    case ets:lookup(esaml_privkey_cache, Identifier) of
+    case cache_lookup(esaml_privkey_cache, Identifier) of
         [{_, Key}] -> Key;
         _ -> do_import_private_key(EncodedKey, Identifier)
     end.
@@ -206,7 +216,7 @@ import_certificate(EncodedCert, Identifier) ->
 %% @doc Loads certificate chain from a file on disk (or ETS memory cache)
 -spec load_certificate_chain(Path :: string()) -> [binary()].
 load_certificate_chain(Path) ->
-    case ets:lookup(esaml_certbin_cache, Path) of
+    case cache_lookup(esaml_certbin_cache, Path) of
         [{_, CertChain}] ->
             CertChain;
         _ ->
@@ -217,7 +227,7 @@ load_certificate_chain(Path) ->
 %% @doc Loads certificate chain from a file on disk (or ETS memory cache)
 -spec import_certificate_chain(EncodedCerts :: string(), Identifier :: string()) -> [binary()].
 import_certificate_chain(EncodedCerts, Identifier) ->
-    case ets:lookup(esaml_certbin_cache, Identifier) of
+    case cache_lookup(esaml_certbin_cache, Identifier) of
         [{_, CertChain}] ->
             CertChain;
         _ ->
@@ -233,7 +243,7 @@ do_import_certificate_chain(EncodedCerts, Identifier) ->
 -spec load_metadata(Url :: string(), Fingerprints :: [string() | binary()]) -> esaml:idp_metadata().
 load_metadata(Url, FPs) ->
     Fingerprints = convert_fingerprints(FPs),
-    case ets:lookup(esaml_idp_meta_cache, Url) of
+    case cache_lookup(esaml_idp_meta_cache, Url) of
         [{Url, Meta}] -> Meta;
         _ ->
             {ok, {{_Ver, 200, _}, _Headers, Body}} = httpc:request(get, {Url, []}, [{autoredirect, true}, {timeout, 3000}], []),
@@ -250,7 +260,7 @@ load_metadata(Url, FPs) ->
 %% @doc Reads IDP metadata from a URL (or ETS memory cache)
 -spec load_metadata(Url :: string()) -> esaml:idp_metadata().
 load_metadata(Url) ->
-    case ets:lookup(esaml_idp_meta_cache, Url) of
+    case cache_lookup(esaml_idp_meta_cache, Url) of
         [{Url, Meta}] -> Meta;
         _ ->
             Timeout = application:get_env(esaml, load_metadata_timeout, 15000),
