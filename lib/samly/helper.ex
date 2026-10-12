@@ -67,14 +67,40 @@ defmodule Samly.Helper do
     {idp_signout_url, xml_frag}
   end
 
+  @doc """
+  Decode and validate an IdP sign-in response, rejecting replays of a response already seen.
+
+  Replay detection keys on the digest of the assertion element and remembers it
+  in ETS until the assertion would have expired anyway. Keying on the assertion
+  rather than the enclosing response means an attacker cannot change unsigned
+  parts of the envelope (for example the response ID when only the assertion is
+  signed) to evade replay detection. The ETS tables are owned by the process
+  `:esaml_util.start_ets/0` spawns from `Samly.Provider`, and the check is
+  per-node (it is broadcast to connected nodes only).
+  """
   def decode_idp_auth_resp(sp, saml_encoding, saml_response) do
-    with {:ok, xml_frag} <- decode_saml_payload(saml_encoding, saml_response),
-         {:ok, assertion_rec} <- :esaml_sp.validate_assertion(xml_frag, sp) do
+    with(
+      {:ok, xml_frag} <- decode_saml_payload(saml_encoding, saml_response),
+      {:ok, assertion_rec} <-
+        :esaml_sp.validate_assertion(xml_frag, &:esaml_util.check_dupe_ets/2, sp)
+    ) do
       {:ok, Assertion.from_rec(assertion_rec)}
     else
       {:error, reason} -> {:error, reason}
       error -> {:error, {:invalid_request, "#{inspect(error)}"}}
     end
+  end
+
+  @doc """
+  Return the `ID` attribute of a generated SAML request element as a string.
+
+  The ID is what the IdP echoes back as `InResponseTo`, so the SP-initiated
+  flow stores it in the session to tie the response to the request it sent.
+  """
+  @spec request_id(tuple()) :: binary()
+  def request_id(xml_elem) do
+    {:xmlObj, :string, id} = :xmerl_xpath.string(~c"string(@ID)", xml_elem)
+    List.to_string(id)
   end
 
   def decode_idp_signout_resp(sp, saml_encoding, saml_response) do
@@ -108,12 +134,19 @@ defmodule Samly.Helper do
     end
   end
 
+  # Decodes the base64 (and maybe deflated) SAML payload into an xmerl element.
+  #
+  # Returns `{:error, {:invalid_response, reason}}` for anything that is not
+  # well-formed XML. xmerl signals parse failures with `exit/1`, so a plain
+  # `rescue` would let a malformed POST crash the request process.
   defp decode_saml_payload(saml_encoding, saml_payload) do
     try do
       xml = :esaml_binding.decode_response(saml_encoding, saml_payload)
       {:ok, xml}
     rescue
       error -> {:error, {:invalid_response, "#{inspect(error)}"}}
+    catch
+      :exit, reason -> {:error, {:invalid_response, "#{inspect(reason)}"}}
     end
   end
 end

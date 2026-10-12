@@ -1,9 +1,9 @@
 defmodule Samly.Mixfile do
   use Mix.Project
 
-  @version "1.4.1"
-  @description "SAML Single-Sign-On Authentication for Plug/Phoenix Applications"
-  @source_url "https://github.com/dropbox/samly"
+  @version "1.5.0"
+  @description "SAML Single-Sign-On Authentication for Plug/Phoenix Applications (Semsee fork, esaml vendored)"
+  @source_url "https://github.com/Semsee/samly"
 
   def project() do
     [
@@ -21,7 +21,9 @@ defmodule Samly.Mixfile do
   # Run "mix help compile.app" to learn about applications.
   def application() do
     [
-      extra_applications: [:logger, :eex]
+      # the vendored esaml Erlang modules (src/) need xmerl, crypto, public_key,
+      # and inets/ssl for the optional remote metadata loader
+      extra_applications: [:logger, :eex, :xmerl, :crypto, :public_key, :inets, :ssl]
     ]
   end
 
@@ -29,8 +31,7 @@ defmodule Samly.Mixfile do
   defp deps() do
     [
       {:plug, "~> 1.6"},
-      {:esaml, "~> 4.3"},
-      {:sweet_xml, "~> 0.6"},
+      {:sweet_xml, "~> 0.7"},
       {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
       {:ex_doc, "~> 0.19", only: :dev, runtime: false}
     ]
@@ -47,9 +48,18 @@ defmodule Samly.Mixfile do
 
   defp package() do
     [
-      maintainers: ["dropbox", "KMC"],
-      files: ["config", "lib", "LICENSE", "mix.exs", "README.md"],
-      licenses: ["MIT"],
+      maintainers: ["dropbox", "KMC", "Semsee"],
+      files: [
+        "config",
+        "lib",
+        "src",
+        "include",
+        "LICENSE",
+        "LICENSE.esaml",
+        "mix.exs",
+        "README.md"
+      ],
+      licenses: ["MIT", "BSD-2-Clause"],
       links: %{"GitHub" => @source_url}
     ]
   end

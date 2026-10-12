@@ -94,12 +94,17 @@ defmodule Samly.SPHandler do
     end
   end
 
-  # SP-initiated flow auth response
-  defp validate_authresp(conn, _assertion, relay_state) do
+  # SP-initiated flow auth response.
+  #
+  # Besides the relay state, the assertion's InResponseTo must name the
+  # AuthnRequest this session sent; otherwise a response minted for some other
+  # request (or browser) could be posted into this session.
+  defp validate_authresp(conn, %{subject: %{in_response_to: in_response_to}}, relay_state) do
     %IdpData{id: idp_id} = conn.private[:samly_idp]
     rs_in_session = get_session(conn, "relay_state")
     idp_id_in_session = get_session(conn, "idp_id")
     url_in_session = get_session(conn, "target_url")
+    request_id_in_session = get_session(conn, "samly_request_id")
 
     cond do
       rs_in_session == nil || rs_in_session != relay_state ->
@@ -110,6 +115,9 @@ defmodule Samly.SPHandler do
 
       url_in_session == nil ->
         {:error, :invalid_target_url}
+
+      request_id_in_session == nil || request_id_in_session != in_response_to ->
+        {:error, :invalid_in_response_to}
 
       true ->
         :ok
