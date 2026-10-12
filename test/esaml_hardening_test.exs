@@ -7,11 +7,18 @@ defmodule EsamlHardeningTest do
   use ExUnit.Case, async: false
 
   require Samly.Esaml
+  require Record
   alias Samly.Esaml
+
+  Record.defrecord(:xmlElement, Record.extract(:xmlElement, from_lib: "xmerl/include/xmerl.hrl"))
 
   @deflate "urn:oasis:names:tc:SAML:2.0:bindings:URL-Encoding:DEFLATE"
   @recipient "https://sp.example.com/sso/sp/consume/idp"
   @audience "urn:test:sp"
+  @saml_ns [
+    {~c"samlp", ~c"urn:oasis:names:tc:SAML:2.0:protocol"},
+    {~c"saml", ~c"urn:oasis:names:tc:SAML:2.0:assertion"}
+  ]
 
   setup_all do
     :esaml_util.start_ets()
@@ -77,6 +84,29 @@ defmodule EsamlHardeningTest do
     end
   end
 
+  describe "replay detection" do
+    test "keys on the signed assertion, not the unsigned envelope", ctx do
+      sp = assertion_only_sp(ctx.cert, ctx.key)
+      resp_id = "_resp_" <> random_id()
+      xml = signed_assertion_response_xml(ctx, resp_id: resp_id)
+
+      assert {:ok, assertion} = validate_xml(xml, sp)
+      assert Esaml.esaml_assertion(assertion, :recipient) == String.to_charlist(@recipient)
+
+      # The envelope is unsigned, so an attacker can change it. The signed
+      # assertion is untouched, so this must still be detected as a replay.
+      replayed = String.replace(xml, ~s(ID="#{resp_id}"), ~s(ID="_replayed_#{resp_id}"))
+      assert {:error, :duplicate} = validate_xml(replayed, sp)
+    end
+
+    test "does not flag a distinct assertion as a replay", ctx do
+      sp = assertion_only_sp(ctx.cert, ctx.key)
+
+      assert {:ok, _} = validate_xml(signed_assertion_response_xml(ctx), sp)
+      assert {:ok, _} = validate_xml(signed_assertion_response_xml(ctx), sp)
+    end
+  end
+
   describe "untrusted XML parsing" do
     test "does not expand external entities", ctx do
       xxe =
@@ -139,13 +169,74 @@ defmodule EsamlHardeningTest do
     )
   end
 
+  defp assertion_only_sp(cert, key) do
+    Esaml.esaml_sp(
+      key: key,
+      certificate: cert,
+      idp_signs_envelopes: false,
+      idp_signs_assertions: true,
+      trusted_fingerprints: [{:sha256, :crypto.hash(:sha256, cert)}],
+      metadata_uri: ~c"https://sp.example.com/sso/sp/metadata/idp",
+      consume_uri: String.to_charlist(@recipient),
+      entity_id: String.to_charlist(@audience)
+    )
+  end
+
   defp validate(payload, sp) do
     xml = :esaml_binding.decode_response(:undefined, payload)
     :esaml_sp.validate_assertion(xml, &:esaml_util.check_dupe_ets/2, sp)
   end
 
+  defp validate_xml(xml, sp) do
+    payload = Base.encode64(xml)
+    decoded = :esaml_binding.decode_response(:undefined, payload)
+    :esaml_sp.validate_assertion(decoded, &:esaml_util.check_dupe_ets/2, sp)
+  end
+
   defp signed_response(ctx, opts \\ []) do
     ctx |> signed_response_xml(opts) |> Base.encode64()
+  end
+
+  # Signs the Assertion element (leaving the envelope unsigned) and exports the
+  # whole response to a string.
+  defp signed_assertion_response_xml(ctx, opts \\ []) do
+    {doc, _} =
+      opts
+      |> response_xml()
+      |> String.to_charlist()
+      |> :xmerl_scan.string(namespace_conformant: true)
+
+    [assertion] =
+      :xmerl_xpath.string(~c"/samlp:Response/saml:Assertion", doc, namespace: @saml_ns)
+
+    signed =
+      :xmerl_dsig.sign(assertion, ctx.key, ctx.cert, Keyword.get(opts, :sig_alg, :rsa_sha256))
+
+    [replace_assertion(doc, signed)]
+    |> :xmerl.export(:xmerl_xml)
+    |> List.flatten()
+    |> List.to_string()
+  end
+
+  # Replaces the (unsigned) Assertion element in a parsed response with a signed
+  # copy, preserving the rest of the tree.
+  defp replace_assertion(node, signed) do
+    content =
+      node
+      |> xmlElement(:content)
+      |> Enum.map(fn
+        child when is_tuple(child) and elem(child, 0) == :xmlElement ->
+          if xmlElement(child, :name) == :"saml:Assertion" do
+            signed
+          else
+            replace_assertion(child, signed)
+          end
+
+        other ->
+          other
+      end)
+
+    xmlElement(node, content: content)
   end
 
   # Signs the Response envelope with the test key and exports it to a string,

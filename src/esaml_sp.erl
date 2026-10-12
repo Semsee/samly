@@ -237,7 +237,11 @@ validate_assertion(Xml, SP = #esaml_sp{}) ->
 %% @doc Validate and decode an assertion envelope in parsed XML
 %%
 %% The dupe_fun argument is intended to detect duplicate assertions
-%% in the case of a replay attack.
+%% in the case of a replay attack. It is called with the decoded
+%% assertion and the digest of the assertion element itself (not the
+%% enclosing response), so that unsigned parts of the envelope cannot
+%% be changed to evade replay detection when only the assertion is
+%% signed.
 -spec validate_assertion(xml(), dupe_fun(), esaml:sp()) ->
         {ok, esaml:assertion()} | {error, Reason :: term()}.
 validate_assertion(Xml, DuplicateFun, SP = #esaml_sp{}) ->
@@ -299,12 +303,12 @@ validate_assertion(Xml, DuplicateFun, SP = #esaml_sp{}) ->
         end,
         fun(A) ->
             case esaml:validate_assertion(A, SP#esaml_sp.consume_uri, get_entity_id(SP)) of
-                {ok, AR} -> AR;
+                {ok, AR} -> {AR, xmerl_dsig:digest(A)};
                 {error, Reason} -> {error, Reason}
             end
         end,
-        fun(AR) ->
-            case DuplicateFun(AR, xmerl_dsig:digest(Xml)) of
+        fun({AR, Digest}) ->
+            case DuplicateFun(AR, Digest) of
                 ok -> AR;
                 _ -> {error, duplicate}
             end

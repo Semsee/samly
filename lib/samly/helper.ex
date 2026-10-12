@@ -70,10 +70,13 @@ defmodule Samly.Helper do
   @doc """
   Decode and validate an IdP sign-in response, rejecting replays of a response already seen.
 
-  Replay detection keys on the digest of the whole response and remembers it in
-  ETS until the assertion would have expired anyway. The ETS tables are owned
-  by the process `:esaml_util.start_ets/0` spawns from `Samly.Provider`, and
-  the check is per-node (it is broadcast to connected nodes only).
+  Replay detection keys on the digest of the assertion element and remembers it
+  in ETS until the assertion would have expired anyway. Keying on the assertion
+  rather than the enclosing response means an attacker cannot change unsigned
+  parts of the envelope (for example the response ID when only the assertion is
+  signed) to evade replay detection. The ETS tables are owned by the process
+  `:esaml_util.start_ets/0` spawns from `Samly.Provider`, and the check is
+  per-node (it is broadcast to connected nodes only).
   """
   def decode_idp_auth_resp(sp, saml_encoding, saml_response) do
     with(

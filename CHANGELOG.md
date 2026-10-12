@@ -14,6 +14,9 @@
 +   Reject assertions whose `NotBefore` is more than 3 minutes in the future
     (`assertion_not_yet_valid`)
 +   Detect replayed responses with `esaml_util:check_dupe_ets/2` (`duplicate`)
++   Key replay detection on the digest of the assertion element rather than the
+    whole response, so unsigned envelope changes cannot evade it when only the
+    assertion is signed
 +   Store the AuthnRequest `ID` in the session and require the SP-initiated
     response's `InResponseTo` to match (`invalid_in_response_to`)
 +   Treat xmerl parse failures (which `exit`) as `invalid_response` instead of
