@@ -8,14 +8,11 @@
 
 %% @doc SAML for Erlang
 -module(esaml).
--behaviour(application).
--behaviour(supervisor).
 
 -include_lib("xmerl/include/xmerl.hrl").
 -include_lib("public_key/include/public_key.hrl").
 -include("esaml.hrl").
 
--export([start/2, stop/1, init/1]).
 -export([stale_time/1]).
 -export([config/2, config/1, to_xml/1, decode_response/1, decode_assertion/1, validate_assertion/3]).
 -export([decode_logout_request/1, decode_logout_response/1, decode_idp_metadata/1]).
@@ -47,31 +44,21 @@
 -type conditions() :: [condition()].
 -export_type([localized_string/0, name_format/0, logout_reason/0, status_code/0, version/0, datetime/0, conditions/0]).
 
-%% @private
-start(_StartType, _StartArgs) ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
-
-%% @private
-stop(_State) ->
-    ok.
-
-%% @private
-init([]) ->
-    DupeEts = {esaml_ets_table_owner,
-        {esaml_util, start_ets, []},
-        permanent, 5000, worker, [esaml]},
-    {ok,
-        {{one_for_one, 60, 600},
-        [DupeEts]}}.
+%% These modules are vendored into the samly application: there is no esaml OTP
+%% application any more. Samly.Provider calls esaml_util:start_ets/0 to create
+%% the ETS tables that used to be owned by the esaml supervisor.
 
 %% @doc Retrieve a config record
 -spec config(Name :: atom()) -> term() | undefined.
 config(N) -> config(N, undefined).
 %% @doc Retrieve a config record with default
+%%
+%% Reads from the `esaml' key of the samly application environment, e.g.
+%% `config :samly, esaml: [trusted_fingerprints: [...]]'.
 -spec config(Name :: atom(), Default :: term()) -> term().
 config(N, D) ->
-    case application:get_env(esaml, N) of
-        {ok, V} -> V;
+    case application:get_env(samly, esaml) of
+        {ok, Opts} when is_list(Opts) -> proplists:get_value(N, Opts, D);
         _ -> D
     end.
 
@@ -378,6 +365,30 @@ check_stale(A) ->
         A
     end.
 
+%% Clock drift tolerated between the IdP and this SP, in seconds.
+-define(clock_skew_secs, 180).
+
+%% @private
+%% Rejects assertions whose NotBefore condition still lies in the future.
+%%
+%% The SAML profile says such assertions MUST NOT be accepted; the original code
+%% never checked it. A few minutes of skew are allowed so a slightly fast IdP
+%% clock does not lock users out.
+check_not_before(A) ->
+    case proplists:get_value(not_before, A#esaml_assertion.conditions) of
+        undefined ->
+            A;
+        NotBefore ->
+            Now = erlang:localtime_to_universaltime(erlang:localtime()),
+            NowSecs = calendar:datetime_to_gregorian_seconds(Now),
+            NbSecs = calendar:datetime_to_gregorian_seconds(esaml_util:saml_to_datetime(NotBefore)),
+            if (NbSecs > NowSecs + ?clock_skew_secs) ->
+                {error, assertion_not_yet_valid};
+            true ->
+                A
+            end
+    end.
+
 %% @doc Parse and validate an assertion, returning it as a record
 %% @private
 -spec validate_assertion(AssertionXml :: #xmlElement{}, Recipient :: string(), Audience :: string()) ->
@@ -405,7 +416,8 @@ validate_assertion(AssertionXml, Recipient, Audience) ->
                         end;
                     _ -> A
                 end end,
-                fun check_stale/1
+                fun check_stale/1,
+                fun check_not_before/1
             ], Assertion)
     end.
 

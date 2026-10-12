@@ -176,16 +176,17 @@ validate_logout_request(Xml, SP = #esaml_sp{}) ->
             if SP#esaml_sp.idp_signs_logout_requests ->
                 case xmerl_dsig:verify(X, SP#esaml_sp.trusted_fingerprints) of
                     ok -> X;
-                    OuterError -> {error, OuterError}
+                    {error, _} = OuterError -> OuterError
                 end;
             true -> X
             end
         end,
         fun(X) ->
-            case (catch esaml:decode_logout_request(X)) of
+            try esaml:decode_logout_request(X) of
                 {ok, LR} -> LR;
-                {'EXIT', Reason} -> {error, Reason};
                 Err -> Err
+            catch
+                _:Reason -> {error, Reason}
             end
         end
     ], Xml).
@@ -210,16 +211,17 @@ validate_logout_response(Xml, SP = #esaml_sp{}) ->
                 [#xmlElement{}] ->
                     case xmerl_dsig:verify(X, SP#esaml_sp.trusted_fingerprints) of
                         ok -> X;
-                        OuterError -> {error, OuterError}
+                        {error, _} = OuterError -> OuterError
                     end;
                 _ -> X
             end
         end,
         fun(X) ->
-            case (catch esaml:decode_logout_response(X)) of
+            try esaml:decode_logout_response(X) of
                 {ok, LR} -> LR;
-                {'EXIT', Reason} -> {error, Reason};
                 Err -> Err
+            catch
+                _:Reason -> {error, Reason}
             end
         end,
         fun(LR = #esaml_logoutresp{status = success}) -> LR;
@@ -281,7 +283,7 @@ validate_assertion(Xml, DuplicateFun, SP = #esaml_sp{}) ->
                 SP#esaml_sp.idp_signs_envelopes ->
                     case xmerl_dsig:verify(Xml, SP#esaml_sp.trusted_fingerprints) of
                         ok -> A;
-                        OuterError -> {error, {envelope, OuterError}}
+                        {error, OuterError} -> {error, {envelope, OuterError}}
                     end;
                 true -> A
             end
@@ -290,7 +292,7 @@ validate_assertion(Xml, DuplicateFun, SP = #esaml_sp{}) ->
             if SP#esaml_sp.idp_signs_assertions ->
                 case xmerl_dsig:verify(A, SP#esaml_sp.trusted_fingerprints) of
                     ok -> A;
-                    InnerError -> {error, {assertion, InnerError}}
+                    {error, InnerError} -> {error, {assertion, InnerError}}
                 end;
             true -> A
             end
@@ -319,7 +321,7 @@ decrypt_assertion(Xml, #esaml_sp{key = PrivateKey}) ->
     SymmetricKey = decrypt_key_info(EncryptedData, PrivateKey),
     [#xmlAttribute{value = Algorithm}] = xmerl_xpath:string("./xenc:EncryptionMethod/@Algorithm", EncryptedData, [{namespace, XencNs}]),
     AssertionXml = block_decrypt(Algorithm, SymmetricKey, CipherValue),
-    {Assertion, _} = xmerl_scan:string(AssertionXml, [{namespace_conformant, true}]),
+    {Assertion, _} = xmerl_scan:string(AssertionXml, [{namespace_conformant, true}, {allow_entities, false}]),
     Assertion.
 
 

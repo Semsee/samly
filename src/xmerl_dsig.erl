@@ -16,8 +16,9 @@
 %% These routines work on xmerl data structures (see the xmerl user guide
 %% for details).
 %%
-%% Currently only RSA + SHA1|SHA256 signatures are supported, in the typical
-%% enveloped mode.
+%% Signing supports RSA + SHA1|SHA256 (SHA256 by default) in the typical
+%% enveloped mode. Verification accepts RSA + SHA256|SHA384|SHA512 only;
+%% SHA1 signatures and digests are rejected as insecure.
 -module(xmerl_dsig).
 
 -export([verify/1, verify/2, sign/3, sign/4, strip/1, digest/1]).
@@ -158,9 +159,11 @@ digest(Element, HashFunction) ->
 %% accepted.
 %%
 %% Will throw badmatch errors if you give it XML that is not signed
-%% according to the xml-dsig spec. If you're using something other
-%% than rsa+sha1 or sha256 this will asplode. Don't say I didn't warn you.
--spec verify(Element :: #xmlElement{}, Fingerprints :: [fingerprint()] | any) -> ok | {error, bad_digest | bad_signature | cert_not_accepted}.
+%% according to the xml-dsig spec.
+-spec verify(Element :: #xmlElement{}, Fingerprints :: [fingerprint()] | any) ->
+    ok | {error, no_signature | multiple_signatures | insecure_algorithm | unsupported_algorithm |
+                 insecure_digest | unsupported_digest | bad_reference | bad_digest |
+                 bad_signature | cert_not_accepted}.
 verify(Element, Fingerprints) ->
     DsNs = [{"ds", 'http://www.w3.org/2000/09/xmldsig#'},
         {"ec", 'http://www.w3.org/2001/10/xml-exc-c14n#'}],
@@ -169,66 +172,148 @@ verify(Element, Fingerprints) ->
         [] ->
             {error, no_signature};
         [#xmlAttribute{value = SignatureMethodAlgorithm}] ->
-            {HashFunction, _, _} = signature_props(SignatureMethodAlgorithm),
-
-            [#xmlAttribute{value = "http://www.w3.org/2001/10/xml-exc-c14n#"}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:CanonicalizationMethod/@Algorithm", Element, [{namespace, DsNs}]),
-            [#xmlAttribute{value = SignatureMethodAlgorithm}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:SignatureMethod/@Algorithm", Element, [{namespace, DsNs}]),
-            [C14nTx = #xmlElement{}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:Reference/ds:Transforms/ds:Transform[@Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#']", Element, [{namespace, DsNs}]),
-            InclNs = case xmerl_xpath:string("ec:InclusiveNamespaces/@PrefixList", C14nTx, [{namespace, DsNs}]) of
-                [] -> [];
-                [#xmlAttribute{value = NsList}] -> string:tokens(NsList, " ,")
-            end,
-
-            CanonXml = xmerl_c14n:c14n(strip(Element), false, InclNs),
-            CanonXmlUtf8 = unicode:characters_to_binary(CanonXml, unicode, utf8),
-            CanonSha = crypto:hash(HashFunction, CanonXmlUtf8),
-
-            [#xmlText{value = Sha64}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:Reference/ds:DigestValue/text()", Element, [{namespace, DsNs}]),
-            CanonSha2 = base64:decode(Sha64),
-
-            if not (CanonSha =:= CanonSha2) ->
-                {error, bad_digest};
-
-            true ->
-                [SigInfo] = xmerl_xpath:string("ds:Signature/ds:SignedInfo", Element, [{namespace, DsNs}]),
-                SigInfoCanon = xmerl_c14n:c14n(SigInfo),
-                Data = list_to_binary(SigInfoCanon),
-
-                [#xmlText{value = Sig64}] = xmerl_xpath:string("ds:Signature//ds:SignatureValue/text()", Element, [{namespace, DsNs}]),
-                Sig = base64:decode(Sig64),
-
-                [#xmlText{value = Cert64}] = xmerl_xpath:string("ds:Signature//ds:X509Certificate/text()", Element, [{namespace, DsNs}]),
-                CertBin = base64:decode(Cert64),
-                CertHash = crypto:hash(sha, CertBin),
-                CertHash2 = crypto:hash(sha256, CertBin),
-
-                Cert = public_key:pkix_decode_cert(CertBin, plain),
-                KeyBin = case Cert#'Certificate'.tbsCertificate#'TBSCertificate'.subjectPublicKeyInfo#'SubjectPublicKeyInfo'.subjectPublicKey of
-                  {_, KeyBin2} -> KeyBin2;
-                  KeyBin3 -> KeyBin3
-                end,
-                Key = public_key:pem_entry_decode({'RSAPublicKey', KeyBin, not_encrypted}),
-
-                case public_key:verify(Data, HashFunction, Sig, Key) of
-                    true ->
-                        case Fingerprints of
-                            any ->
-                                ok;
-                            _ ->
-                                case lists:any(fun(X) -> lists:member(X, Fingerprints) end, [CertHash, {sha,CertHash}, {sha256,CertHash2}]) of
-                                    true ->
-                                        ok;
-                                    false ->
-                                        {error, cert_not_accepted}
-                                end
-                        end;
-                    false ->
-                        {error, bad_signature}
-                end
+            case verify_props(SignatureMethodAlgorithm) of
+                {ok, SigHash} ->
+                    verify_signature(Element, Fingerprints, SigHash, DsNs);
+                {error, _} = Err ->
+                    Err
             end;
         _ ->
             {error, multiple_signatures}
     end.
+
+%% @private
+%% Checks the digest, signature and signing certificate of an element whose
+%% signature algorithm has already been accepted.
+%%
+%% Still throws badmatch on structurally invalid signatures (e.g. two References);
+%% esaml_sp wraps every step in a catch, so callers see an {error, _} tuple.
+verify_signature(Element, Fingerprints, SigHash, DsNs) ->
+    [#xmlAttribute{value = "http://www.w3.org/2001/10/xml-exc-c14n#"}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:CanonicalizationMethod/@Algorithm", Element, [{namespace, DsNs}]),
+    [#xmlAttribute{value = DigestMethodAlgorithm}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:Reference/ds:DigestMethod/@Algorithm", Element, [{namespace, DsNs}]),
+    [C14nTx = #xmlElement{}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:Reference/ds:Transforms/ds:Transform[@Algorithm='http://www.w3.org/2001/10/xml-exc-c14n#']", Element, [{namespace, DsNs}]),
+    InclNs = case xmerl_xpath:string("ec:InclusiveNamespaces/@PrefixList", C14nTx, [{namespace, DsNs}]) of
+        [] -> [];
+        [#xmlAttribute{value = NsList}] -> string:tokens(NsList, " ,")
+    end,
+
+    case {digest_props(DigestMethodAlgorithm), reference_matches_element(Element, DsNs)} of
+        {{error, _} = DigestErr, _} ->
+            DigestErr;
+        {_, false} ->
+            {error, bad_reference};
+        {{ok, DigestHash}, true} ->
+            CanonXml = xmerl_c14n:c14n(strip(Element), false, InclNs),
+            CanonXmlUtf8 = unicode:characters_to_binary(CanonXml, unicode, utf8),
+            CanonSha = crypto:hash(DigestHash, CanonXmlUtf8),
+
+            [#xmlText{value = Sha64}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:Reference/ds:DigestValue/text()", Element, [{namespace, DsNs}]),
+            CanonSha2 = base64:decode(Sha64),
+
+            case constant_time_equal(CanonSha, CanonSha2) of
+                false ->
+                    {error, bad_digest};
+                true ->
+                    [SigInfo] = xmerl_xpath:string("ds:Signature/ds:SignedInfo", Element, [{namespace, DsNs}]),
+                    SigInfoCanon = xmerl_c14n:c14n(SigInfo),
+                    Data = unicode:characters_to_binary(SigInfoCanon, unicode, utf8),
+
+                    [#xmlText{value = Sig64}] = xmerl_xpath:string("ds:Signature//ds:SignatureValue/text()", Element, [{namespace, DsNs}]),
+                    Sig = base64:decode(Sig64),
+
+                    [#xmlText{value = Cert64}] = xmerl_xpath:string("ds:Signature//ds:X509Certificate/text()", Element, [{namespace, DsNs}]),
+                    CertBin = base64:decode(Cert64),
+                    CertHash = crypto:hash(sha, CertBin),
+                    CertHash2 = crypto:hash(sha256, CertBin),
+
+                    Cert = public_key:pkix_decode_cert(CertBin, plain),
+                    KeyBin = case Cert#'Certificate'.tbsCertificate#'TBSCertificate'.subjectPublicKeyInfo#'SubjectPublicKeyInfo'.subjectPublicKey of
+                      {_, KeyBin2} -> KeyBin2;
+                      KeyBin3 -> KeyBin3
+                    end,
+                    Key = public_key:pem_entry_decode({'RSAPublicKey', KeyBin, not_encrypted}),
+
+                    case public_key:verify(Data, SigHash, Sig, Key) of
+                        true ->
+                            case Fingerprints of
+                                any ->
+                                    ok;
+                                _ ->
+                                    case lists:any(fun(X) -> lists:member(X, Fingerprints) end, [CertHash, {sha,CertHash}, {sha256,CertHash2}]) of
+                                        true ->
+                                            ok;
+                                        false ->
+                                            {error, cert_not_accepted}
+                                    end
+                            end;
+                        false ->
+                            {error, bad_signature}
+                    end
+            end
+    end.
+
+%% @private
+%% Compares two digests without leaking where they first differ.
+constant_time_equal(A, B) when byte_size(A) =:= byte_size(B) ->
+    crypto:hash_equals(A, B);
+constant_time_equal(_, _) ->
+    false.
+
+%% @private
+%% Ensures the ds:Reference points at the element that carries the signature.
+%%
+%% The digest is always computed over the element itself, so a signature moved
+%% from one element to another already fails the digest check; this makes the
+%% failure explicit and rejects malformed references early. An empty URI means
+%% "the whole document", which is only correct when the element is the root.
+reference_matches_element(Element, DsNs) ->
+    [#xmlAttribute{value = URI}] = xmerl_xpath:string("ds:Signature/ds:SignedInfo/ds:Reference/@URI", Element, [{namespace, DsNs}]),
+    case URI of
+        "" -> true;
+        "#" ++ Id -> element_id(Element) =:= Id;
+        _ -> false
+    end.
+
+%% @private
+element_id(#xmlDocument{content = Kids}) ->
+    case [K || K = #xmlElement{} <- Kids] of
+        [Root | _] -> element_id(Root);
+        [] -> undefined
+    end;
+element_id(#xmlElement{attributes = Attrs}) ->
+    case lists:keyfind('ID', #xmlAttribute.name, Attrs) of
+        #xmlAttribute{value = Id} -> Id;
+        false ->
+            case lists:keyfind('id', #xmlAttribute.name, Attrs) of
+                #xmlAttribute{value = Id} -> Id;
+                false -> undefined
+            end
+    end.
+
+%% @private
+%% Accepts only signature algorithms considered safe for verification.
+%%
+%% RSA-SHA1 is rejected outright: SHA-1 is collision-prone and every mainstream
+%% IdP has defaulted to RSA-SHA256 for years. Unknown algorithms return an error
+%% tuple instead of crashing with function_clause so callers get a clear reason.
+-spec verify_props(string()) -> {ok, HashFunction :: atom()} | {error, insecure_algorithm | unsupported_algorithm}.
+verify_props("http://www.w3.org/2000/09/xmldsig#rsa-sha1") -> {error, insecure_algorithm};
+verify_props("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256") -> {ok, sha256};
+verify_props("http://www.w3.org/2001/04/xmldsig-more#rsa-sha384") -> {ok, sha384};
+verify_props("http://www.w3.org/2001/04/xmldsig-more#rsa-sha512") -> {ok, sha512};
+verify_props(_) -> {error, unsupported_algorithm}.
+
+%% @private
+%% Maps the Reference's DigestMethod to a hash, refusing SHA-1 and unknown digests.
+%%
+%% The original code hashed the element with the *signature* algorithm's hash and
+%% never looked at DigestMethod, which silently broke on IdPs that mix the two.
+-spec digest_props(string()) -> {ok, HashFunction :: atom()} | {error, insecure_digest | unsupported_digest}.
+digest_props("http://www.w3.org/2000/09/xmldsig#sha1") -> {error, insecure_digest};
+digest_props("http://www.w3.org/2001/04/xmlenc#sha256") -> {ok, sha256};
+digest_props("http://www.w3.org/2001/04/xmldsig-more#sha384") -> {ok, sha384};
+digest_props("http://www.w3.org/2001/04/xmlenc#sha512") -> {ok, sha512};
+digest_props(_) -> {error, unsupported_digest}.
 
 %% @doc Verifies an XML digital signature, trusting any valid certificate.
 %%

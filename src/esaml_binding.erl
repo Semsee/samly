@@ -14,6 +14,10 @@
 -include_lib("xmerl/include/xmerl.hrl").
 -define(deflate, <<"urn:oasis:names:tc:SAML:2.0:bindings:URL-Encoding:DEFLATE">>).
 
+%% Hard cap on the size of an inflated SAML message. Real-world responses are
+%% tens of kilobytes; anything approaching this limit is a decompression bomb.
+-define(max_inflated_bytes, 1024 * 1024).
+
 -type uri() :: binary() | string().
 -type html_doc() :: binary().
 -type xml() :: #xmlElement{} | #xmlDocument{}.
@@ -38,17 +42,57 @@ xml_payload_type(Xml) ->
 %% @doc Unpack and parse a SAMLResponse with given encoding
 -spec decode_response(SAMLEncoding :: binary(), SAMLResponse :: binary()) -> #xmlDocument{}.
 decode_response(?deflate, SAMLResponse) ->
-	XmlData = binary_to_list(zlib:unzip(base64:decode(SAMLResponse))),
-	{Xml, _} = xmerl_scan:string(XmlData, [{namespace_conformant, true}]),
-    Xml;
+    XmlData = binary_to_list(safe_unzip(base64:decode(SAMLResponse))),
+    scan_untrusted(XmlData);
 decode_response(_, SAMLResponse) ->
-	Data = base64:decode(SAMLResponse),
-    XmlData = case (catch zlib:unzip(Data)) of
-        {'EXIT', _} -> binary_to_list(Data);
+    Data = base64:decode(SAMLResponse),
+    %% HTTP-POST payloads are normally plain XML, but some IdPs deflate them too.
+    XmlData = try safe_unzip(Data) of
         Bin -> binary_to_list(Bin)
+    catch
+        _:_ -> binary_to_list(Data)
     end,
-	{Xml, _} = xmerl_scan:string(XmlData, [{namespace_conformant, true}]),
+    scan_untrusted(XmlData).
+
+%% @private
+%% Parses XML that came from the network, with entity expansion disabled.
+%%
+%% Expanding entities before the signature is checked lets an attacker read
+%% local files or reach internal hosts (CVE-2026-28809). OTP 27+ already
+%% defaults to this, the explicit option keeps older releases safe too.
+-spec scan_untrusted(string()) -> #xmlElement{}.
+scan_untrusted(XmlData) ->
+    {Xml, _} = xmerl_scan:string(XmlData, [{namespace_conformant, true}, {allow_entities, false}]),
     Xml.
+
+%% @private
+%% Inflates a raw-DEFLATE payload, refusing to grow past ?max_inflated_bytes.
+%%
+%% zlib:unzip/1 allocates whatever the stream expands to, so a few kilobytes of
+%% crafted input could exhaust memory on the SP before any validation runs.
+%% Raises error(inflated_payload_too_large) when the cap is exceeded.
+-spec safe_unzip(binary()) -> binary().
+safe_unzip(Compressed) ->
+    Z = zlib:open(),
+    try
+        ok = zlib:inflateInit(Z, -15),
+        Inflated = safe_inflate_loop(Z, zlib:safeInflate(Z, Compressed), [], 0),
+        ok = zlib:inflateEnd(Z),
+        Inflated
+    after
+        zlib:close(Z)
+    end.
+
+safe_inflate_loop(Z, {Status, Chunk}, Acc, Size) ->
+    NewSize = Size + iolist_size(Chunk),
+    if NewSize > ?max_inflated_bytes -> error(inflated_payload_too_large);
+       true -> ok
+    end,
+    NewAcc = [Acc, Chunk],
+    case Status of
+        finished -> iolist_to_binary(NewAcc);
+        continue -> safe_inflate_loop(Z, zlib:safeInflate(Z, []), NewAcc, NewSize)
+    end.
 
 %% @doc Encode a SAMLRequest (or SAMLResponse) as an HTTP-Redirect binding
 %%
@@ -60,7 +104,7 @@ encode_http_redirect(IdpTarget, SignedXml, Username, RelayState) ->
 
   QueryList = [
                {"SAMLEncoding", ?deflate},
-               {Type, uri_string:quote(base64:encode_to_string(zlib:zip(Req)))},
+               {Type, base64:encode_to_string(zlib:zip(Req))},
                {"RelayState", uri_string:normalize(binary_to_list(RelayState))}
               ],
   QueryParamStr = uri_string:compose_query(QueryList),
